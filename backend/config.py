@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 # Paths
@@ -37,4 +38,7 @@ CLAUDE_MODEL = "claude-sonnet-4-6"
 CLAUDE_MAX_TOKENS = 1024
 
 # API
-CORS_ORIGINS = ["http://localhost:3000"]
+# Comma-separated in production (e.g. "https://vigil.vercel.app"); always
+# includes localhost:3000 so local dev keeps working regardless.
+_extra_origins = [o.strip() for o in os.environ.get("CORS_ORIGINS", "").split(",") if o.strip()]
+CORS_ORIGINS = ["http://localhost:3000", *_extra_origins]
