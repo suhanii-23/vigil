@@ -14,15 +14,18 @@ for d in (VIDEOS_DIR, METADATA_DIR, CHROMA_DIR, KEYFRAMES_DIR):
     d.mkdir(parents=True, exist_ok=True)
 
 # Frame extraction
-FRAME_SAMPLE_FPS = 2              # extract 2 frames per second
+FRAME_SAMPLE_FPS = 1              # extract 1 frame per second — traded density for
+                                   # processing speed; the every-10s keyframe rule in
+                                   # processor.py still guarantees full-video coverage
 KEYFRAME_SCORE_THRESHOLD = 0.08   # lower = more keyframes on static cameras
 
 # YOLO
 # Benchmarked n/s/m on real footage: confidence rises steadily with size
 # (0.53/0.60/0.64) but each misses/hallucinates different classes — no size
-# is a strict upgrade. "s" is the balance point: meaningfully more confident
-# than nano at ~2x latency, well short of medium's ~3.5x.
-YOLO_MODEL = "yolov8s.pt"
+# is a strict upgrade. Using "n" here trades some confidence for ~2x faster
+# inference than "s"; bump to yolov8s.pt if detection quality matters more
+# than processing time.
+YOLO_MODEL = "yolov8n.pt"
 YOLO_CONF_THRESHOLD = 0.35
 YOLO_TRACKER = "bytetrack.yaml"  # motion-only MOT tracker, ships with ultralytics
 
