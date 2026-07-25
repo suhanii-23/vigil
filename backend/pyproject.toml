@@ -16,6 +16,7 @@ dependencies = [
     "sentence-transformers>=3.0",
     "chromadb>=0.5",
     "anthropic>=0.28",
+    "openai>=1.30",               # also used for OpenAI-compatible providers: Gemini, Grok
     "pillow>=10.3",
     "python-dotenv>=1.0",
 ]

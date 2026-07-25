@@ -16,9 +16,10 @@ from typing import Literal
 
 import anthropic
 import cv2
+import openai
 from sentence_transformers import SentenceTransformer
 
-from config import CLAUDE_MODEL, CLIP_MODEL, KEYFRAMES_DIR
+from config import CLIP_MODEL, KEYFRAMES_DIR, PROVIDER_CONFIGS
 from storage import query_embeddings, read_metadata
 
 # ---------------------------------------------------------------------------
@@ -28,32 +29,53 @@ from storage import query_embeddings, read_metadata
 _anthropic: anthropic.Anthropic | None = None
 _clip: SentenceTransformer | None = None
 
+Provider = Literal["anthropic", "openai", "gemini", "grok"]
+
 
 class MissingAPIKeyError(Exception):
-    """Raised when no Anthropic key is available — neither a user-supplied
-    (BYOK) key nor the server's own .env fallback."""
+    """Raised when no key is available for the requested provider — neither
+    a user-supplied (BYOK) key nor (for anthropic only) the server's own
+    .env fallback."""
 
 
-def _client(api_key: str | None = None) -> anthropic.Anthropic:
-    """Build an Anthropic client for this request.
+class UnknownProviderError(Exception):
+    """Raised when the requested provider isn't one Vigil knows how to talk to."""
 
-    A BYOK frontend user's key is never cached across requests — different
+
+def _client(
+    provider: str, api_key: str | None = None
+) -> anthropic.Anthropic | openai.OpenAI:
+    """Build a client for this request's chosen provider.
+
+    A BYOK visitor's key is never cached across requests — different
     visitors supply different keys, so each gets its own fresh client. Only
-    the server's own fallback key (from .env, kept for local-dev
-    convenience) is cached as a singleton, since that one is constant.
+    the server's own Anthropic fallback key (from .env, kept for local-dev
+    convenience) is cached as a singleton, since that one is constant. There
+    is no server-side fallback for openai/gemini/grok — Vigil doesn't hold
+    keys for those, so BYOK is mandatory for them.
     """
-    if api_key:
-        return anthropic.Anthropic(api_key=api_key)
+    if provider not in PROVIDER_CONFIGS:
+        raise UnknownProviderError(f"Unknown provider: {provider!r}")
 
-    global _anthropic
-    if _anthropic is None:
-        env_key = os.environ.get("ANTHROPIC_API_KEY")
-        if not env_key:
-            raise MissingAPIKeyError(
-                "No Anthropic API key available — add your own key to use chat."
-            )
-        _anthropic = anthropic.Anthropic(api_key=env_key)
-    return _anthropic
+    if provider == "anthropic":
+        if api_key:
+            return anthropic.Anthropic(api_key=api_key)
+        global _anthropic
+        if _anthropic is None:
+            env_key = os.environ.get("ANTHROPIC_API_KEY")
+            if not env_key:
+                raise MissingAPIKeyError(
+                    "No Anthropic API key available — add your own key to use chat."
+                )
+            _anthropic = anthropic.Anthropic(api_key=env_key)
+        return _anthropic
+
+    # openai / gemini / grok — all OpenAI-compatible, BYOK only
+    if not api_key:
+        raise MissingAPIKeyError(
+            f"No {provider} API key available — add your own key to use chat."
+        )
+    return openai.OpenAI(api_key=api_key, base_url=PROVIDER_CONFIGS[provider]["base_url"])
 
 
 def _get_clip() -> SentenceTransformer:
@@ -85,14 +107,29 @@ Routes:
 Output only the single word with no punctuation or explanation."""
 
 
-def _classify(query: str, api_key: str | None = None) -> Route:
-    resp = _client(api_key).messages.create(
-        model=CLAUDE_MODEL,
-        max_tokens=10,
-        system=_CLASSIFIER_SYSTEM,
-        messages=[{"role": "user", "content": query}],
-    )
-    word = resp.content[0].text.strip().lower()  # type: ignore[union-attr]
+def _classify(query: str, provider: str = "anthropic", api_key: str | None = None) -> Route:
+    model = PROVIDER_CONFIGS[provider]["model"]
+    client = _client(provider, api_key)
+
+    if provider == "anthropic":
+        resp = client.messages.create(
+            model=model,
+            max_tokens=10,
+            system=_CLASSIFIER_SYSTEM,
+            messages=[{"role": "user", "content": query}],
+        )
+        word = resp.content[0].text.strip().lower()  # type: ignore[union-attr]
+    else:
+        resp = client.chat.completions.create(
+            model=model,
+            max_tokens=10,
+            messages=[
+                {"role": "system", "content": _CLASSIFIER_SYSTEM},
+                {"role": "user", "content": query},
+            ],
+        )
+        word = (resp.choices[0].message.content or "").strip().lower()
+
     if word in ("structured", "semantic", "hybrid"):
         return word  # type: ignore[return-value]
     # Default to hybrid if the classifier produces something unexpected
@@ -203,11 +240,14 @@ def _parse_timestamp(query: str) -> float | None:
 
 def _frames_around_timestamp(
     video_path: str, timestamp_sec: float, window_sec: float = 30.0, n_frames: int = 5
-) -> list[dict]:
-    """Return n_frames evenly spaced in [timestamp - window, timestamp + window].
+) -> list[str]:
+    """Return n_frames (as raw base64 JPEG strings) evenly spaced in
+    [timestamp - window, timestamp + window].
 
-    This gives Claude before/after context so it can say whether an event
-    already happened, is in progress, or hasn't occurred yet.
+    This gives the model before/after context so it can say whether an
+    event already happened, is in progress, or hasn't occurred yet. Kept
+    provider-agnostic (plain base64, not a provider-specific content block)
+    since the caller formats these differently per provider.
     """
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
@@ -216,26 +256,22 @@ def _frames_around_timestamp(
     start = max(0.0, timestamp_sec - window_sec)
     end = min(duration, timestamp_sec + window_sec)
     times = [start + i * (end - start) / max(n_frames - 1, 1) for i in range(n_frames)]
-    blocks = []
+    images = []
     for t in times:
         cap.set(cv2.CAP_PROP_POS_MSEC, t * 1000)
         ret, frame = cap.read()
         if not ret:
             continue
         _, buf = cv2.imencode(".jpg", frame)
-        data = base64.standard_b64encode(buf.tobytes()).decode()
-        blocks.append({
-            "type": "image",
-            "source": {"type": "base64", "media_type": "image/jpeg", "data": data},
-        })
+        images.append(base64.standard_b64encode(buf.tobytes()).decode())
     cap.release()
-    return blocks
+    return images
 
 
 def _relevant_frames(
     video_id: str, semantic_hits: list[dict], max_images: int = 16
-) -> list[dict]:
-    """Return Anthropic image content blocks Claude should actually see.
+) -> list[str]:
+    """Return raw base64 JPEG strings for the frames the model should see.
 
     Two sources, combined:
       1. The frames ChromaDB's semantic search matched to the query — these
@@ -275,14 +311,7 @@ def _relevant_frames(
                 chosen.append(p)
                 seen.add(p)
 
-    blocks = []
-    for p in chosen[:max_images]:
-        data = base64.standard_b64encode(p.read_bytes()).decode()
-        blocks.append({
-            "type": "image",
-            "source": {"type": "base64", "media_type": "image/jpeg", "data": data},
-        })
-    return blocks
+    return [base64.standard_b64encode(p.read_bytes()).decode() for p in chosen[:max_images]]
 
 
 _ANSWER_SYSTEM = """\
@@ -299,6 +328,14 @@ Formatting rules:
 - If evidence is insufficient, say so in one sentence and stop"""
 
 
+def _image_block(data: str, provider: str) -> dict:
+    """Format one base64 JPEG as this provider's multimodal content block —
+    Anthropic and the OpenAI-compatible providers use different shapes."""
+    if provider == "anthropic":
+        return {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": data}}
+    return {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{data}"}}
+
+
 def _synthesise(
     query: str,
     context: str,
@@ -306,10 +343,16 @@ def _synthesise(
     video_id: str | None = None,
     video_path: str | None = None,
     semantic_hits: list[dict] | None = None,
+    provider: str = "anthropic",
     api_key: str | None = None,
 ) -> str:
     messages: list[dict] = []
     semantic_hits = semantic_hits or []
+
+    # Anthropic takes the system prompt as its own top-level param; the
+    # OpenAI-compatible providers expect it as the first message instead.
+    if provider != "anthropic":
+        messages.append({"role": "system", "content": _ANSWER_SYSTEM})
 
     # Include previous turns if any
     for turn in history:
@@ -323,17 +366,15 @@ def _synthesise(
     # semantic-search hits plus frames spanning the whole video
     ts = _parse_timestamp(query)
     if ts is not None and video_path:
-        image_blocks = _frames_around_timestamp(video_path, ts) or _relevant_frames(
+        images = _frames_around_timestamp(video_path, ts) or _relevant_frames(
             video_id or "", semantic_hits
         )
     else:
-        image_blocks = _relevant_frames(video_id or "", semantic_hits) if video_id else []
-    user_content: list[dict] = []
-    if image_blocks:
-        user_content.extend(image_blocks)
+        images = _relevant_frames(video_id or "", semantic_hits) if video_id else []
+    user_content: list[dict] = [_image_block(data, provider) for data in images]
     img_label = (
         f"Frames spanning ±30s around the {ts:.1f}s mark (ordered chronologically — before, at, and after the requested moment)."
-        if ts is not None and image_blocks
+        if ts is not None and images
         else "Frames most relevant to the question, plus frames spanning the full video for coverage."
     )
     user_content.append({
@@ -346,13 +387,24 @@ def _synthesise(
     })
     messages.append({"role": "user", "content": user_content})
 
-    resp = _client(api_key).messages.create(
-        model=CLAUDE_MODEL,
+    client = _client(provider, api_key)
+    model = PROVIDER_CONFIGS[provider]["model"]
+
+    if provider == "anthropic":
+        resp = client.messages.create(
+            model=model,
+            max_tokens=1024,
+            system=_ANSWER_SYSTEM,
+            messages=messages,
+        )
+        return resp.content[0].text.strip()  # type: ignore[union-attr]
+
+    resp = client.chat.completions.create(
+        model=model,
         max_tokens=1024,
-        system=_ANSWER_SYSTEM,
         messages=messages,
     )
-    return resp.content[0].text.strip()  # type: ignore[union-attr]
+    return (resp.choices[0].message.content or "").strip()
 
 
 # ---------------------------------------------------------------------------
@@ -364,6 +416,7 @@ def answer(
     query: str,
     history: list[dict] | None = None,
     video_path: str | None = None,
+    provider: str = "anthropic",
     api_key: str | None = None,
 ) -> dict:
     """
@@ -372,8 +425,10 @@ def answer(
     """
     if history is None:
         history = []
+    if provider not in PROVIDER_CONFIGS:
+        raise UnknownProviderError(f"Unknown provider: {provider!r}")
 
-    route = _classify(query, api_key=api_key)
+    route = _classify(query, provider=provider, api_key=api_key)
 
     hits: list[dict] = []
     if route == "structured":
@@ -389,7 +444,7 @@ def answer(
 
     text = _synthesise(
         query, context, history, video_id=video_id, video_path=video_path, semantic_hits=hits,
-        api_key=api_key,
+        provider=provider, api_key=api_key,
     )
 
     return {"answer": text, "route": route, "context": context}

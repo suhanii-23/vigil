@@ -6,6 +6,8 @@ import asyncio
 import json
 from pathlib import Path
 
+import anthropic
+import openai
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -15,7 +17,7 @@ load_dotenv()
 
 from config import CORS_ORIGINS, JOBS_FILE, VIDEOS_DIR
 from processor import process_video, save_upload
-from router import MissingAPIKeyError, answer
+from router import MissingAPIKeyError, UnknownProviderError, answer
 from storage import delete_video_data, save_frame_records
 
 app = FastAPI(title="Vigil API", version="0.1.0")
@@ -93,7 +95,8 @@ class ChatRequest(BaseModel):
     video_id: str
     query: str
     history: list[dict] = []
-    api_key: str | None = None  # BYOK — user's own Anthropic key from the frontend
+    provider: str = "anthropic"  # BYOK — which provider the user's key is for
+    api_key: str | None = None   # BYOK — user's own key from the frontend
 
 
 @app.post("/chat")
@@ -104,10 +107,17 @@ async def chat(req: ChatRequest):
     loop = asyncio.get_event_loop()
     try:
         result = await loop.run_in_executor(
-            None, answer, req.video_id, req.query, req.history, job.get("video_path"), req.api_key
+            None, answer, req.video_id, req.query, req.history, job.get("video_path"),
+            req.provider, req.api_key,
         )
     except MissingAPIKeyError as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from exc
+    except UnknownProviderError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except (anthropic.AuthenticationError, openai.AuthenticationError) as exc:
+        raise HTTPException(
+            status_code=401, detail="That API key was rejected by the provider — double-check it and try again."
+        ) from exc
     return result
 
 

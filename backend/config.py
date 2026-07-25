@@ -37,6 +37,21 @@ CHROMA_COLLECTION = "vigil_frames"
 CLAUDE_MODEL = "claude-sonnet-4-6"
 CLAUDE_MAX_TOKENS = 1024
 
+# BYOK providers — anthropic uses its own native SDK (its Messages API isn't
+# OpenAI-compatible); openai/gemini/grok all speak the OpenAI chat-completions
+# schema, so a single `openai` SDK client covers all three by just swapping
+# base_url. Model names are defaults and will need updating as providers ship
+# newer ones — not something to hardcode and forget.
+PROVIDER_CONFIGS = {
+    "anthropic": {"model": CLAUDE_MODEL, "base_url": None},
+    "openai": {"model": "gpt-5.6", "base_url": "https://api.openai.com/v1"},
+    "gemini": {
+        "model": "gemini-3.6-flash",
+        "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
+    },
+    "grok": {"model": "grok-4.5", "base_url": "https://api.x.ai/v1"},
+}
+
 # API
 # Comma-separated in production (e.g. "https://vigil.vercel.app"); always
 # includes localhost:3000 so local dev keeps working regardless.

@@ -25,7 +25,17 @@ type Conversation = {
 // ---------------------------------------------------------------------------
 
 const STORAGE_KEY = "vigil_conversations";
-const API_KEY_STORAGE = "vigil_anthropic_key";
+const API_KEY_STORAGE = "vigil_api_key";
+const PROVIDER_STORAGE = "vigil_api_provider";
+
+type Provider = "anthropic" | "openai" | "gemini" | "grok";
+
+const PROVIDERS: { id: Provider; label: string; keyUrl: string; placeholder: string }[] = [
+  { id: "anthropic", label: "Anthropic (Claude)", keyUrl: "https://console.anthropic.com/settings/keys", placeholder: "sk-ant-..." },
+  { id: "openai", label: "OpenAI (GPT)", keyUrl: "https://platform.openai.com/api-keys", placeholder: "sk-..." },
+  { id: "gemini", label: "Google (Gemini)", keyUrl: "https://aistudio.google.com/apikey", placeholder: "AIza..." },
+  { id: "grok", label: "xAI (Grok)", keyUrl: "https://console.x.ai", placeholder: "xai-..." },
+];
 
 function loadConversations(): Conversation[] {
   if (typeof window === "undefined") return [];
@@ -48,6 +58,16 @@ function loadApiKey(): string {
 function saveApiKey(key: string) {
   if (key) localStorage.setItem(API_KEY_STORAGE, key);
   else localStorage.removeItem(API_KEY_STORAGE);
+}
+
+function loadProvider(): Provider {
+  if (typeof window === "undefined") return "anthropic";
+  const stored = localStorage.getItem(PROVIDER_STORAGE);
+  return (PROVIDERS.find(p => p.id === stored)?.id) ?? "anthropic";
+}
+
+function saveProvider(provider: Provider) {
+  localStorage.setItem(PROVIDER_STORAGE, provider);
 }
 
 function newConversation(videoId: string): Conversation {
@@ -128,12 +148,14 @@ function MessageBubble({ msg }: { msg: Message }) {
 function ApiKeyControl() {
   const [open, setOpen] = useState(false);
   const [key, setKey] = useState("");
+  const [provider, setProvider] = useState<Provider>("anthropic");
   const [saved, setSaved] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const existing = loadApiKey();
     setKey(existing);
+    setProvider(loadProvider());
     setSaved(!!existing);
   }, []);
 
@@ -162,6 +184,7 @@ function ApiKeyControl() {
 
   function handleSave() {
     saveApiKey(key.trim());
+    saveProvider(provider);
     setSaved(!!key.trim());
     setOpen(false);
   }
@@ -172,6 +195,8 @@ function ApiKeyControl() {
     setSaved(false);
   }
 
+  const activeProvider = PROVIDERS.find(p => p.id === provider) ?? PROVIDERS[0];
+
   return (
     <div className="relative" ref={containerRef}>
       <button
@@ -181,20 +206,34 @@ function ApiKeyControl() {
         }`}
       >
         <div className={`w-1.5 h-1.5 rounded-full ${saved ? "bg-emerald-500" : "bg-zinc-600"}`} />
-        <span className="hidden sm:inline">{saved ? "Key set" : "Add API key"}</span>
+        <span className="hidden sm:inline">{saved ? `${activeProvider.label.split(" ")[0]} key set` : "Add API key"}</span>
       </button>
 
       {open && (
         <div className="absolute right-0 top-full mt-2 w-72 bg-zinc-900 border border-zinc-800 rounded-lg p-4 z-20 shadow-xl">
           <p className="text-xs text-zinc-400 mb-2 leading-relaxed">
-            Your own Anthropic API key. Stored only in this browser and sent
-            directly with each chat request — never logged or stored on the server.
+            Your own API key, for any provider below. Stored only in this
+            browser and sent directly with each chat request — never logged
+            or stored on the server.
           </p>
+
+          <label className="block text-[10px] font-mono text-zinc-500 uppercase tracking-widest mb-1">Provider</label>
+          <select
+            value={provider}
+            onChange={(e) => setProvider(e.target.value as Provider)}
+            className="w-full bg-zinc-950 border border-zinc-700 rounded px-3 py-2 text-xs font-mono text-zinc-100 outline-none focus:border-zinc-500 mb-3"
+          >
+            {PROVIDERS.map(p => (
+              <option key={p.id} value={p.id}>{p.label}</option>
+            ))}
+          </select>
+
+          <label className="block text-[10px] font-mono text-zinc-500 uppercase tracking-widest mb-1">API key</label>
           <input
             type="password"
             value={key}
             onChange={(e) => setKey(e.target.value)}
-            placeholder="sk-ant-..."
+            placeholder={activeProvider.placeholder}
             className="w-full bg-zinc-950 border border-zinc-700 rounded px-3 py-2 text-xs font-mono text-zinc-100 outline-none focus:border-zinc-500 mb-3"
           />
           <div className="flex gap-2">
@@ -214,12 +253,12 @@ function ApiKeyControl() {
             )}
           </div>
           <a
-            href="https://console.anthropic.com/settings/keys"
+            href={activeProvider.keyUrl}
             target="_blank"
             rel="noreferrer"
             className="block text-[10px] text-zinc-600 hover:text-zinc-400 mt-2 underline"
           >
-            Get a key from console.anthropic.com →
+            Get an API key from {activeProvider.label} →
           </a>
         </div>
       )}
@@ -397,6 +436,7 @@ function ChatUI() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           video_id: videoId, query, history: messages,
+          provider: loadProvider(),
           api_key: loadApiKey() || undefined,
         }),
       });
@@ -404,7 +444,7 @@ function ChatUI() {
       if (res.status === 401) {
         const data = await res.json().catch(() => ({}));
         const content = data.detail
-          ?? "Add your Anthropic API key (top right, \"Add API key\") to chat.";
+          ?? "Add your API key (top right, \"Add API key\") to chat.";
         const errMsgs = [...nextMsgs, { role: "assistant" as const, content }];
         setMessages(errMsgs);
         persistConv(savedConv, errMsgs);
