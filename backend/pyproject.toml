@@ -26,6 +26,10 @@ dev = ["ruff", "pytest", "httpx"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["."]
+# yolov8n.pt lands in this directory at build time (ultralytics downloads it
+# to the cwd) — exclude it so hatchling doesn't sweep the weight file into
+# the wheel as if it were package source.
+exclude = ["*.pt"]
 
 [tool.ruff]
 line-length = 100
