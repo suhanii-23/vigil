@@ -130,6 +130,14 @@ async def chat(req: ChatRequest):
         raise HTTPException(
             status_code=401, detail="That API key was rejected by the provider — double-check it and try again."
         ) from exc
+    except (anthropic.APIStatusError, openai.APIStatusError) as exc:
+        # Covers non-auth provider rejections (bad request, rate limit, etc.) that
+        # would otherwise surface as an unhandled 500 with a non-JSON body — which
+        # the frontend can't parse and reports as a generic "Connection error".
+        provider_detail = None
+        if isinstance(exc.body, dict):
+            provider_detail = exc.body.get("error", {}).get("message")
+        raise HTTPException(status_code=502, detail=provider_detail or str(exc)) from exc
     return result
 
 

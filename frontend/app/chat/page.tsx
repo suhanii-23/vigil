@@ -441,10 +441,12 @@ function ChatUI() {
         }),
       });
 
-      if (res.status === 401) {
+      if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         const content = data.detail
-          ?? "Add your API key (top right, \"Add API key\") to chat.";
+          ?? (res.status === 401
+            ? "Add your API key (top right, \"Add API key\") to chat."
+            : `Request failed (${res.status}).`);
         const errMsgs = [...nextMsgs, { role: "assistant" as const, content }];
         setMessages(errMsgs);
         persistConv(savedConv, errMsgs);
