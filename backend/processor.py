@@ -5,6 +5,8 @@ Video processing pipeline: upload → frame extraction → YOLO detection → CL
 from __future__ import annotations
 
 import asyncio
+import math
+import time
 import uuid
 from pathlib import Path
 from typing import Callable, Iterator
@@ -220,14 +222,22 @@ def process_video(
     _reset_tracker(_get_yolo())
 
     duration_sec = _video_duration_sec(video_path)
+    start_time = time.monotonic()
     last_reported = -1
 
     for frame_idx, timestamp, frame_bgr in _sample_frames(video_path, FRAME_SAMPLE_FPS):
         detections = _track(frame_bgr)
         embedding = _embed_frame(frame_bgr)
 
-        if on_progress and duration_sec:
-            pct = min(99, int(timestamp / duration_sec * 100))
+        if on_progress:
+            if duration_sec:
+                pct = min(99, int(timestamp / duration_sec * 100))
+            else:
+                # cv2 can't report a frame count/fps for some containers (common
+                # with phone/browser-recorded video) — fall back to a saturating
+                # time curve so the bar still moves instead of sitting at 0.
+                elapsed = time.monotonic() - start_time
+                pct = min(95, int(100 * (1 - math.exp(-elapsed / 30))))
             if pct != last_reported:
                 on_progress(pct)
                 last_reported = pct
