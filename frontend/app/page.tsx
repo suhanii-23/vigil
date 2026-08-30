@@ -241,13 +241,12 @@ function UploadSection() {
     if (!res.ok) { setStatus("error"); setDetail("Upload failed — check backend"); return; }
     const { video_id } = await res.json();
     setStatus("processing"); setProgress(0);
-    let tick = 0;
     const iv = setInterval(async () => {
-      tick++; setProgress(Math.min(90, tick * 4));
       const r = await fetch(`${API}/status/${video_id}`);
       const job = await r.json();
       if (job.status === "ready") { clearInterval(iv); setProgress(100); setTimeout(() => router.push(`/chat?video_id=${video_id}`), 400); }
       else if (job.status === "error") { clearInterval(iv); setStatus("error"); setDetail(job.detail ?? "Processing failed"); }
+      else setProgress(job.progress ?? 0);
     }, 2000);
   }
 

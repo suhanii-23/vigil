@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from functools import partial
 from pathlib import Path
 
 import anthropic
@@ -52,6 +53,17 @@ _jobs: dict[str, dict] = _load_jobs()
 
 def _set_job(video_id: str, data: dict) -> None:
     _jobs[video_id] = data
+    _save_jobs(_jobs)
+
+
+def _set_progress(video_id: str, pct: int) -> None:
+    """Called from the executor thread running process_video — updates the
+    existing job in place rather than replacing it, so status/video_path
+    (set by _run_pipeline) survive concurrent progress ticks."""
+    job = _jobs.get(video_id)
+    if job is None:
+        return
+    job["progress"] = pct
     _save_jobs(_jobs)
 
 
@@ -132,7 +144,8 @@ async def delete_video(video_id: str):
 async def _run_pipeline(video_id: str, video_path: Path) -> None:
     loop = asyncio.get_event_loop()
     try:
-        records = await loop.run_in_executor(None, process_video, video_id, video_path)
+        pipeline = partial(process_video, video_id, video_path, on_progress=partial(_set_progress, video_id))
+        records = await loop.run_in_executor(None, pipeline)
         await loop.run_in_executor(None, save_frame_records, video_id, records)
         _set_job(video_id, {
             "status": "ready",

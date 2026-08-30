@@ -7,7 +7,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from pathlib import Path
-from typing import Iterator
+from typing import Callable, Iterator
 
 import cv2
 import numpy as np
@@ -193,7 +193,24 @@ async def save_upload(file_bytes: bytes, original_filename: str) -> tuple[str, P
     return video_id, dest
 
 
-def process_video(video_id: str, video_path: Path) -> list[dict]:
+def _video_duration_sec(video_path: Path) -> float | None:
+    """Best-effort total duration so progress can be reported as % of runtime."""
+    cap = cv2.VideoCapture(str(video_path))
+    try:
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        frame_count = cap.get(cv2.CAP_PROP_FRAME_COUNT)
+        if fps > 0 and frame_count > 0:
+            return frame_count / fps
+        return None
+    finally:
+        cap.release()
+
+
+def process_video(
+    video_id: str,
+    video_path: Path,
+    on_progress: Callable[[int], None] | None = None,
+) -> list[dict]:
     """
     Full pipeline: extract frames → detect objects → embed keyframes.
     Returns list of frame records (dicts) ready for storage.
@@ -202,9 +219,18 @@ def process_video(video_id: str, video_path: Path) -> list[dict]:
     last_kf_emb: list[float] | None = None
     _reset_tracker(_get_yolo())
 
+    duration_sec = _video_duration_sec(video_path)
+    last_reported = -1
+
     for frame_idx, timestamp, frame_bgr in _sample_frames(video_path, FRAME_SAMPLE_FPS):
         detections = _track(frame_bgr)
         embedding = _embed_frame(frame_bgr)
+
+        if on_progress and duration_sec:
+            pct = min(99, int(timestamp / duration_sec * 100))
+            if pct != last_reported:
+                on_progress(pct)
+                last_reported = pct
 
         time_kf = (int(timestamp) % 10 == 0)  # always keep one frame every 10s
         kf = _is_keyframe(embedding, last_kf_emb) or time_kf
