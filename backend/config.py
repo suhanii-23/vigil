@@ -14,9 +14,13 @@ for d in (VIDEOS_DIR, METADATA_DIR, CHROMA_DIR, KEYFRAMES_DIR):
     d.mkdir(parents=True, exist_ok=True)
 
 # Frame extraction
-FRAME_SAMPLE_FPS = 1              # extract 1 frame per second — traded density for
-                                   # processing speed; the every-10s keyframe rule in
-                                   # processor.py still guarantees full-video coverage
+FRAME_SAMPLE_FPS = 0.2             # extract 1 frame every 5s — dropped from 1/s since
+                                   # Render's free-tier 0.15 vCPU makes YOLO+CLIP per
+                                   # frame the bottleneck; this is a 5x cut in total
+                                   # inference work. Tracking continuity (ByteTrack)
+                                   # degrades at this gap — it's tuned for near-
+                                   # continuous frames — so track IDs will be less
+                                   # stable across samples than at 1fps.
 KEYFRAME_SCORE_THRESHOLD = 0.08   # lower = more keyframes on static cameras
 
 # YOLO
